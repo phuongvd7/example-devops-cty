@@ -1,0 +1,117 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${SERVICE_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    matchLabels:
+      service: ${SERVICE_NAME}
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        service: ${SERVICE_NAME}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "${METRIC_PATH}"
+        prometheus.io/port: "${CONTAINER_PORT}"
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: ${SERVICE_NAME}
+        image: ${IMAGE}
+        envFrom:
+        - secretRef:
+            name: ${SERVICE_NAME}
+        - configMapRef:
+            name: ${SERVICE_NAME}
+#        readinessProbe:
+#          httpGet:
+#            path: ${METRIC_PATH}
+#            port: ${CONTAINER_PORT}
+#          initialDelaySeconds: 5
+#          periodSeconds: 5
+#        livenessProbe:
+#          initialDelaySeconds: 10
+#          periodSeconds: 10
+#          httpGet:
+#            path: ${METRIC_PATH}
+#            port: ${CONTAINER_PORT}
+#        lifecycle:
+#          preStop:
+#            exec:
+#              command:
+#              - sleep
+#              - "10"
+#
+        ports:
+        - containerPort: ${CONTAINER_PORT}
+      nodeSelector:
+        services: "true"
+      imagePullSecrets:
+      - name: registry
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${SERVICE_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  ports:
+  - port: ${CONTAINER_PORT}
+    protocol: TCP
+  selector:
+    service: ${SERVICE_NAME}
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name:  ${SERVICE_NAME}
+  namespace: ${NAMESPACE}
+  annotations:
+    kubernetes.io/ingress.class: kong
+spec:
+  rules:
+  - host: ${DOMAIN}
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: ${SERVICE_NAME}
+          servicePort: ${CONTAINER_PORT}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${SERVICE_NAME}
+  namespace: ${NAMESPACE}
+data:
+  DEBUG: "True"
+  ALLOWED_HOSTS: '["staging-admin-service.vtvlive.vn"]'
+  DB_DEFAULT_NAME: "onme_user"
+  DB_DEFAULT_HOST: "mysql8.services.svc.cluster.local"
+  DB_DEFAULT_PORT: "3306"
+  DB_ONME_CONTENT_NAME: "onme_content"
+  DB_ONME_CONTENT_HOST: "mysql8.services.svc.cluster.local"
+  DB_ONME_CONTENT_PORT: "3306"
+  DB_ONME_PAYMENT_NAME: "onme_payment"
+  DB_ONME_PAYMENT_HOST: "mysql8.services.svc.cluster.local"
+  DB_ONME_PAYMENT_PORT: "3306"
+
+  AMQP_QUEUE_NAME: "transcoder.jobs.transcode"
+  AMQP_ROUTING_KEY: "transcoder.jobs.transcode"
+  AMQP_USERNAME: "vtvlive"
+  AMQP_PASSWORD: "GB2HdsBv8Is2M6roVMh1"
+  AMQP_HOST: "rabbitmq.services.svc.cluster.local"
+  AMQP_PORT: "5672"
+
+  S3_ACCESS_KEY_ID: "K28409Xlv6kooeir4U"
+  S3_SECRET_ACCESS_KEY: "xV4LeOpWZYnwZ80N0HM1_rzej5qS2M0g4k9YFYoo4QM"
+  S3_STORAGE_BUCKET_NAME: "s3.vtvlive.vn"
+  S3_ENDPOINT_URL: "http://s3vn10cdn.swiftserve.com"
+  S3_PUBLIC_PATH: "https://s3.vtvlive.vn/images/staging"
+  S3_BASE_PATH_UPLOAD: "pub/images/staging"
+

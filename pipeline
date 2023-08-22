@@ -1,0 +1,159 @@
+def call(Map param) {
+    pipeline {
+        agent any
+        environment {
+            SERVICE_NAME = "${param.namespace}-${param.service_name}"
+            SERVICE_SHORT_NAME = "${param.service_name}"
+            IS_SUBDOMAIN = "${param.is_subdomain}"
+            CONTAINER_PORT = "${param.container_port}"
+            SERVICE_PATH = "${param.service_path}"
+            HASH_BY_HOST = "\$remote_addr"
+            //SERVICE_VER = getVersionName("${env.gitlabTargetBranch}")
+            SERVICE_VER = "${param.service_ver}"
+            SECRET = '$'
+        }
+
+        stages {
+            stage('Pull Source Code') {
+                steps {
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: scm.branches,
+                        doGenerateSubmoduleConfigurations: true,
+                        extensions: scm.extensions + [[$class: 'SubmoduleOption', parentCredentials: true]],
+                        userRemoteConfigs: scm.userRemoteConfigs
+                    ])
+                }
+            }
+            stage('Deploy Develop') {
+                when { 
+                    not { environment name: 'DEPLOY', value: 'PRODUCTION' }
+                    not { environment name: 'DEPLOY', value: 'TESTING' }
+                    not { environment name: 'DEPLOY', value: 'STAGING' }
+                    //environment name: 'gitlabTargetBranch', value: 'master'
+                    anyOf { 
+                        environment name: 'DEPLOY', value: 'DEVELOP';
+                        expression {
+                            //gitlabTargetBranch ==~ /^v[1-9]{1}[.][0-9]{2}$|^v[1-9]{1}$|^refs\/heads\/v[1-9]{1}[.][0-9]{2}$|^refs\/heads\/v[1-9]{1}$|^master$/
+                            gitlabTargetBranch ==~ /develop\/*([a-z0-9]*)|^master$/
+                        }
+                    }
+
+                }
+                environment {
+                    NAMESPACE = 'develop'
+                    DOMAIN = "${env.IS_SUBDOMAIN == 'false' ? "dev.${param.domain}" : "dev-${param.domain}"}"
+                    IMAGE = "${REGISTRY_URL}/${SERVICE_NAME}-${NAMESPACE}:${env.BUILD_NUMBER}"
+                    DEPLOY = 'DEVELOP'
+                }
+                steps {
+                    script {
+                        sh 'env'
+                        // build
+                        app = docker.build("${SERVICE_NAME}-${NAMESPACE}", "--build-arg DEPLOY=${DEPLOY.toLowerCase()} .")
+                        docker.withRegistry("https://${REGISTRY_URL}", 'nexus') {
+                            app.push("${env.BUILD_NUMBER}")
+                        }
+                        sh "envsubst < deploy/${NAMESPACE}/deploy.yaml > deploy.yaml"
+                        withKubeConfig([credentialsId: 'k8s-develop-common', serverUrl: "${K8S_DEVELOP_COMMON_URL}"]) {
+                        sh '/usr/local/bin/kubectl apply -f deploy.yaml'
+                        }
+                        sh "docker rmi -f ${REGISTRY_URL}/${SERVICE_NAME}-${NAMESPACE}:${env.BUILD_NUMBER}"
+                        sh "docker rmi -f ${SERVICE_NAME}-${NAMESPACE}:latest"
+                    }
+                }
+            }
+            stage('Deploy Testing') {
+                when {
+                    not { environment name: 'DEPLOY', value: 'PRODUCTION' }
+                    not { environment name: 'DEPLOY', value: 'STAGING' }
+                    anyOf { environment name: 'gitlabActionType', value: 'TAG_PUSH'; environment name: 'DEPLOY', value: 'TESTING' }
+                    //expression {
+                    //    gitlabTargetBranch ==~ /^release(.*)$/
+                    //}
+                }
+                environment {
+                    NAMESPACE = 'testing'
+                    DOMAIN = "${env.IS_SUBDOMAIN == 'false' ? "testing.${param.domain}" : "testing-${param.domain}"}"
+                    IMAGE = "${REGISTRY_URL}/${SERVICE_NAME}-${NAMESPACE}:${env.BUILD_NUMBER}"
+                    DEPLOY = 'TESTING'
+                }
+                steps {
+                    script {
+                        sh 'env'
+                        app = docker.build("${SERVICE_NAME}-${NAMESPACE}", "--build-arg DEPLOY=${DEPLOY.toLowerCase()} .")
+                        docker.withRegistry("https://${REGISTRY_URL}", 'nexus') {
+                            app.push("${env.BUILD_NUMBER}")
+                        }
+                        sh "envsubst < deploy/${NAMESPACE}/deploy.yaml > deploy.yaml"
+                        withKubeConfig([credentialsId: 'k8s-testing-common', serverUrl: "${K8S_TESTING_COMMON_URL}"]) {
+                        sh '/usr/local/bin/kubectl apply -f deploy.yaml'
+                        }
+                        sh "docker rmi -f ${REGISTRY_URL}/${SERVICE_NAME}-${NAMESPACE}:${env.BUILD_NUMBER}"
+                        sh "docker rmi -f ${SERVICE_NAME}-${NAMESPACE}:latest"
+                    }
+                }
+            }
+
+            stage('Deploy Staging') {
+                when { environment name: 'DEPLOY', value: 'STAGING' }
+                environment {
+                    NAMESPACE = 'staging'
+                    DOMAIN = "${env.IS_SUBDOMAIN == 'false' ? "stg.${param.domain}" : "stg-${param.domain}"}"
+                    VERSION_BUILD = sh(script: 'echo ${GIT_COMMIT} | cut -c1-8', , returnStdout: true).trim()
+                    IMAGE = "${REGISTRY_URL}/${SERVICE_NAME}-${NAMESPACE}:${VERSION_BUILD}"
+                    DEPLOY = 'STAGING'
+                }
+                steps {
+                    script {
+                        sh 'env'
+                        app = docker.build("${SERVICE_NAME}-${NAMESPACE}", "--build-arg DEPLOY=${DEPLOY.toLowerCase()} .")
+                        docker.withRegistry("https://${REGISTRY_URL}", 'nexus') {
+                            app.push("${VERSION_BUILD}")
+                        }
+                        sh "envsubst < deploy/${NAMESPACE}/deploy.yaml > deploy.yaml"
+                        withKubeConfig([credentialsId: 'k8s-staging-common', serverUrl: "${K8S_STAGING_COMMON_URL}"]) {
+                        sh '/usr/local/bin/kubectl apply -f deploy.yaml'
+                        }
+                        sh "docker rmi -f ${REGISTRY_URL}/${SERVICE_NAME}-${NAMESPACE}:${VERSION_BUILD}"
+                        sh "docker rmi -f ${SERVICE_NAME}-${NAMESPACE}:latest"
+                    }
+                }
+            }
+
+            stage('Deploy Production') {
+                when { environment name: 'DEPLOY', value: 'PRODUCTION' }
+                environment {
+                    NAMESPACE = "${param.namespace}"
+                    DOMAIN = "${param.domain}"
+                    VERSION_BUILD = sh(script: 'echo ${GIT_COMMIT} | cut -c1-8', , returnStdout: true).trim()
+                    IMAGE = "${REGISTRY_URL}/${SERVICE_NAME}-staging:${VERSION_BUILD}"
+                }
+                steps {
+                    script {
+                        sh "envsubst < deploy/production/deploy.yaml > deploy.yaml"
+                        withKubeConfig([credentialsId: 'k8s-gobilling-production', serverUrl: "${K8S_PRODUCTION_02_URL}"]) {
+                        sh '/usr/local/bin/kubectl apply -f deploy.yaml'
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+def getVersionName(branchName) {
+        if(branchName.startsWith("refs/tags/")) {
+            return sh(script: "echo ${branchName} | cut -c11-12", , returnStdout: true).trim();
+        } else if(branchName.startsWith("refs/heads/")) {
+            return sh(script: "echo ${branchName} | cut -c12-13", , returnStdout: true).trim();
+        } else if (branchName ==~ /^v[1-9]{1}(.*)$/) {
+            return sh(script: "echo ${branchName} | cut -c1-2", , returnStdout: true).trim();
+        } else{
+            currentBuild.result = 'ABORTED'
+            script {
+                sh 'env'
+            }
+            error('Cannot get Version from branch or tag!')
+        }
+}

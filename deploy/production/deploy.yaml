@@ -1,0 +1,92 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${SERVICE_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    matchLabels:
+      service: ${SERVICE_NAME}
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        service: ${SERVICE_NAME}
+      annotations:
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: ${SERVICE_NAME}
+        image: ${IMAGE}
+        envFrom:
+        - secretRef:
+            name: ${SERVICE_NAME}
+        - configMapRef:
+            name: ${SERVICE_NAME}
+#        readinessProbe:
+#          httpGet:
+#            path: ${METRIC_PATH}
+#            port: ${CONTAINER_PORT}
+#          initialDelaySeconds: 5
+#          periodSeconds: 5
+#        livenessProbe:
+#          initialDelaySeconds: 10
+#          periodSeconds: 10
+#          httpGet:
+#            path: ${METRIC_PATH}
+#            port: ${CONTAINER_PORT}
+#        lifecycle:
+#          preStop:
+#            exec:
+#              command:
+#              - sleep
+#              - "10"
+#
+        ports:
+        - containerPort: ${CONTAINER_PORT}
+      nodeSelector:
+      imagePullSecrets:
+      - name: registry
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${SERVICE_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  ports:
+  - port: ${CONTAINER_PORT}
+    protocol: TCP
+  selector:
+    service: ${SERVICE_NAME}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name:  ${SERVICE_NAME}
+  namespace: ${NAMESPACE}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  rules:
+  - host: ${DOMAIN}
+    http:
+      paths:
+      - path: ${SERVICE_PATH}(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: ${SERVICE_NAME}
+            port:
+              number: ${CONTAINER_PORT}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${SERVICE_NAME}
+  namespace: ${NAMESPACE}
+data:
+  DEBUG: "True"
